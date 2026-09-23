@@ -17,7 +17,7 @@ if _ROOT not in sys.path:
 import paths
 from openai import OpenAI
 from core.renderer import RED, YELLOW, RESET, GRAY
-from tools import *
+import tools as _tools
 from .memory import build_memory_block
 import context_manager as _cm
 import core.display_state as display_state
@@ -802,6 +802,11 @@ def _dispatch_tool(
 
     g = args.get
     started = time.monotonic()
+
+    # Load legacy tool symbols only when the legacy dispatcher is entered.
+    for _name, _value in vars(_tools).items():
+        if not _name.startswith("_"):
+            globals().setdefault(_name, _value)
 
     routes = {
         "run_code": lambda: run_code(
@@ -1755,6 +1760,7 @@ def _ask_with_slots(
                 }
 
                 if allow_tools and not broadcast_mode:
+                    from tools import TOOLS_DESCRIPTION
                     kwargs["tools"] = TOOLS_DESCRIPTION
                     kwargs["tool_choice"] = "auto"
 
