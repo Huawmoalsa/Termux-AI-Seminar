@@ -1734,7 +1734,7 @@ def build_llm_agent(
     is not resent to the model.
     """
 
-    from core.llm_client import ask_seminar_agent
+    from ..llm.client import ask_seminar_agent
 
     class LLMSeminarAgent:
 

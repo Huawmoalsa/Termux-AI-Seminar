@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 try:
-    from orchestration.execution_plan import (
+    from ..orchestration.execution_plan import (
         ExecutionPlan,
         make_tool_call,
     )
@@ -56,7 +56,7 @@ class ExistingRuntimeAdapter:
     """
 
     def __init__(self) -> None:
-        from core.llm_client import _dispatch_tool
+        from ..llm.client import _dispatch_tool
 
         self._dispatch_tool = _dispatch_tool
 
@@ -65,7 +65,7 @@ class ExistingRuntimeAdapter:
         expected_tool: str,
     ) -> Optional[RuntimeEvidenceRef]:
 
-        from core.llm_client import TRUST
+        from ..trust.core import TRUST
 
         try:
             record = TRUST.ledger.latest()
