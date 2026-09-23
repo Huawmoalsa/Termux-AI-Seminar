@@ -19,8 +19,8 @@ from openai import OpenAI
 from core.renderer import RED, YELLOW, RESET, GRAY
 import tools as _tools
 from .memory import build_memory_block
-import context_manager as _cm
-import core.display_state as display_state
+
+
 from ..trust.core import TRUST
 from core.models import PROVIDERS, MODEL_SLOTS, AGENT_MODEL_SLOTS
 
@@ -783,6 +783,8 @@ def _tool_header_lines(
 
 
 def _dispatch_tool(
+
+    import core.display_state as display_state
     tool_call: dict,
     voice: bool = False,
 ) -> str:
@@ -1408,6 +1410,8 @@ def get_last_response_metadata() -> dict:
 
 
 def _display_reasoning(
+
+    import core.display_state as display_state
     provider_id: str,
     model_name: str,
     reasoning: object = None,
@@ -1496,6 +1500,8 @@ TRUST / EPISTEMIC RULES:
 
 
 def _ask_with_slots(
+
+    import context_manager as _cm
     prompt: str,
     history: list[dict] | None,
     voice: bool,
