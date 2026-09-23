@@ -69,7 +69,8 @@
       "Removed obsolete Seminar migration metric and routing patch scripts.",
       "Removed the migrated legacy orchestration runtime tree.",
       "Removed scripts/finalize_seminar.py.",
-      "Finalized the Seminar LLM dependency boundary."
+      "Finalized the Seminar LLM dependency boundary.",
+      "Removed the obsolete .orion_quarantine legacy runtime quarantine tree after dependency/reference closure."
     ],
     "preserved": [
       "src/seminar/",
