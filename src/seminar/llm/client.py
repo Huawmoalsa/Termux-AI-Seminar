@@ -784,10 +784,10 @@ def _tool_header_lines(
 
 def _dispatch_tool(
 
-    import core.display_state as display_state
     tool_call: dict,
     voice: bool = False,
 ) -> str:
+    import core.display_state as display_state
     name = tool_call["function"]["name"]
 
     raw_args = tool_call["function"].get(
@@ -1411,12 +1411,12 @@ def get_last_response_metadata() -> dict:
 
 def _display_reasoning(
 
-    import core.display_state as display_state
     provider_id: str,
     model_name: str,
     reasoning: object = None,
     reasoning_details: object = None,
 ) -> None:
+    import core.display_state as display_state
     """Display provider reasoning according to Ctrl+O."""
     if not reasoning and not reasoning_details:
         return
@@ -1501,7 +1501,6 @@ TRUST / EPISTEMIC RULES:
 
 def _ask_with_slots(
 
-    import context_manager as _cm
     prompt: str,
     history: list[dict] | None,
     voice: bool,
@@ -1510,6 +1509,7 @@ def _ask_with_slots(
     broadcast_mode: bool = False,
     allow_tools: bool = True,
 ) -> str:
+    import context_manager as _cm
     global _last_response_metadata
 
     base_messages: list[dict] = [
