@@ -15,14 +15,13 @@ if _ROOT not in sys.path:
     sys.path.insert(1, _ROOT)
 
 import paths
-from agent import state_manager
 from openai import OpenAI
 from core.renderer import RED, YELLOW, RESET, GRAY
 from tools import *
 from .memory import build_memory_block
 import context_manager as _cm
 import core.display_state as display_state
-from core.trust_layer import TRUST
+from ..trust.core import TRUST
 from core.models import PROVIDERS, MODEL_SLOTS, AGENT_MODEL_SLOTS
 
 with open(paths.PROMPT_FILE, encoding="utf-8") as file:
@@ -916,19 +915,19 @@ def _dispatch_tool(
 
         "initialize_project": lambda:
             json.dumps(
-                state_manager.initialize_project(
+                _get_state_manager().initialize_project(
                     name=g("name", ""),
                     goal=g("goal", ""),
                 )
             ),
 
         "add_subtask": lambda:
-            state_manager.add_subtask(
+            _get_state_manager().add_subtask(
                 description=g("description", ""),
             ),
 
         "update_subtask": lambda:
-            state_manager.update_subtask(
+            _get_state_manager().update_subtask(
                 task_id=int(g("task_id", 0)),
                 status=g("status"),
                 notes=g("notes"),
@@ -2941,6 +2940,11 @@ def ask_seminar_agent(
     )
 
 
+def _get_state_manager():
+    from agent import state_manager
+    return state_manager
+
+
 def ask_agent(
     prompt: str,
     history: list[dict] | None = None,
@@ -2983,7 +2987,7 @@ def run_agent_step(
     _in_agent_mode = True
 
     try:
-        state = state_manager.load_state()
+        state = _get_state_manager().load_state()
 
         if (
             not state
@@ -3107,7 +3111,7 @@ def run_agent_step(
                 voice=voice,
             )
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             status="active",
             notes=(
@@ -3118,7 +3122,7 @@ def run_agent_step(
 
         worker_reply = _worker_call()
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             worker_output=worker_reply,
         )
@@ -3127,7 +3131,7 @@ def run_agent_step(
             worker_reply
         )
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             critic_output=critic_reply,
             verification=critic_reply,
@@ -3135,7 +3139,7 @@ def run_agent_step(
 
         if "VERIFIED" in critic_reply.upper():
             # Critic remains advisory only.
-            state_manager.update_subtask(
+            _get_state_manager().update_subtask(
                 task_id,
                 status="completed",
                 notes=(
@@ -3156,7 +3160,7 @@ def run_agent_step(
             )
 
         if retry_count >= 1:
-            state_manager.update_subtask(
+            _get_state_manager().update_subtask(
                 task_id,
                 status="failed",
                 notes=(
@@ -3176,7 +3180,7 @@ def run_agent_step(
             f"Running retry...{RESET}"
         )
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             retry_count=1,
             status="active",
@@ -3188,7 +3192,7 @@ def run_agent_step(
 
         retry_worker_reply = _worker_call()
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             worker_output=retry_worker_reply,
         )
@@ -3197,7 +3201,7 @@ def run_agent_step(
             retry_worker_reply
         )
 
-        state_manager.update_subtask(
+        _get_state_manager().update_subtask(
             task_id,
             critic_output=retry_critic_reply,
             verification=retry_critic_reply,
@@ -3205,7 +3209,7 @@ def run_agent_step(
 
         if "VERIFIED" in retry_critic_reply.upper():
             # Critic remains advisory after retry as well.
-            state_manager.update_subtask(
+            _get_state_manager().update_subtask(
                 task_id,
                 status="completed",
                 notes=(
@@ -3226,7 +3230,7 @@ def run_agent_step(
             )
 
         else:
-            state_manager.update_subtask(
+            _get_state_manager().update_subtask(
                 task_id,
                 status="failed",
                 notes=(

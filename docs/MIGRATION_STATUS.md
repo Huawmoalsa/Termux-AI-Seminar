@@ -39,3 +39,17 @@ The legacy `tools` dependency remains temporarily because `llm/client.py` still 
 
 The new memory adapter was syntax-validated successfully.
 
+
+## Seminar LLM Import and Tool Boundary Validation
+
+Completed on 2026-09-23.
+
+- Removed eager loading of `agent.state_manager` from `src/seminar/llm/client.py` and replaced it with lazy loading for legacy paths.
+- Redirected the Seminar Trust import to `src/seminar/trust/core.py`.
+- Confirmed that `seminar.llm.client` imports successfully from `src`.
+- Confirmed that `ask_seminar_agent` is callable.
+- Confirmed that `ask_seminar_agent` invokes `_ask_with_slots` with `AGENT_MODEL_SLOTS` and `allow_tools=False`.
+- Confirmed that the remaining legacy imports in `client.py` support shared or legacy paths and were intentionally left unchanged.
+- No LLM request or device tool execution was performed during this validation.
+
+This closes the current LLM import-boundary validation step.
