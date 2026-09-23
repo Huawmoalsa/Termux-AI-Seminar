@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-23T05:41:20",
+  "project": "Termux-AI Seminar",
+  "migrations": [
+    {
+      "name": "seminar_orchestration",
+      "source": "orchestration/ai_seminar.py",
+      "target": "src/seminar/orchestration/ai_seminar.py",
+      "source_sha256": "fecba50e6e955c73f28c555c44fbd51d5bb31c62bde00f2affca2dab2db51b90",
+      "target_sha256": "fecba50e6e955c73f28c555c44fbd51d5bb31c62bde00f2affca2dab2db51b90"
+    },
+    {
+      "name": "llm_client",
+      "source": "core/llm_client.py",
+      "target": "src/seminar/llm/client.py",
+      "source_sha256": "5bdbd95870363b224c6b47819172c18f37f4c7d7fd0047c99d21693d298be4ff",
+      "target_sha256": "5bdbd95870363b224c6b47819172c18f37f4c7d7fd0047c99d21693d298be4ff"
+    },
+    {
+      "name": "broadcast",
+      "source": "core/broadcast.py",
+      "target": "src/seminar/llm/broadcast.py",
+      "source_sha256": "893c0fc3e060165de6eb64656a8b2c5c9d4442c7f64a57cbe6158d0cfd233bd7",
+      "target_sha256": "893c0fc3e060165de6eb64656a8b2c5c9d4442c7f64a57cbe6158d0cfd233bd7"
+    },
+    {
+      "name": "trust_layer",
+      "source": "core/trust_layer.py",
+      "target": "src/seminar/trust/core.py",
+      "source_sha256": "1f84a4ee6c8a4b1322d4b444cb62329a685566e8585c536a7386c239f1c1fbb3",
+      "target_sha256": "1f84a4ee6c8a4b1322d4b444cb62329a685566e8585c536a7386c239f1c1fbb3"
+    },
+    {
+      "name": "execution_plan",
+      "source": "orchestration/execution_plan.py",
+      "target": "src/seminar/orchestration/execution_plan.py",
+      "source_sha256": "cc0119b86448fa4b416136715eadb42a6aec34079407aa8386e8d74d1e1f953e",
+      "target_sha256": "cc0119b86448fa4b416136715eadb42a6aec34079407aa8386e8d74d1e1f953e"
+    },
+    {
+      "name": "runtime_adapter",
+      "source": "orchestration/runtime_adapter.py",
+      "target": "src/seminar/execution/runtime_adapter.py",
+      "source_sha256": "07eadc3ceab5920e7dee50d639a20a295a48ee4fc05f64a8765dda9689196ddc",
+      "target_sha256": "07eadc3ceab5920e7dee50d639a20a295a48ee4fc05f64a8765dda9689196ddc"
+    }
+  ],
+  "legacy": {
+    "legacy_components": [
+      {
+        "path": "Termux-WP",
+        "status": "retained",
+        "reason": "live_reference_detected",
+        "references": [
+          "core/__main__.py",
+          "core/tools.py",
+          "core/whatsapp_manager.py",
+          "scripts/finalize_seminar.py"
+        ]
+      }
+    ]
+  },
+  "backup_root": ".finalize_backups/20260923_054113",
+  "duration_seconds": 7.348
+}

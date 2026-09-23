@@ -1,0 +1,1183 @@
+import re
+import shutil
+import textwrap
+from typing import List, Sequence, Tuple
+
+# -----------------------------
+# ANSI colour / style codes
+# -----------------------------
+
+RESET  = "\033[0m"
+
+BOLD   = "\033[1m"
+ITALIC = "\033[3m"
+DIM    = "\033[2m"
+UNDER  = "\033[4m"
+
+RED    = "\033[31m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+BLUE   = "\033[34m"
+MAG    = "\033[35m"
+CYAN   = "\033[36m"
+GRAY   = "\033[90m"
+
+# Fine-grained attribute reset codes — used instead of RESET to preserve
+# parent styles when closing a nested inline span.
+COLOR_RESET = "\033[39m"   # Default foreground colour (keeps bold/italic active)
+BOLD_OFF    = "\033[22m"   # Normal intensity — turns off bold and dim
+ITALIC_OFF  = "\033[23m"   # Italic off
+UNDER_OFF   = "\033[24m"   # Underline off
+STRIKE_CODE = "\033[9m"    # Crossed-out / strikethrough ON
+STRIKE_OFF  = "\033[29m"   # Crossed-out / strikethrough OFF
+
+# -----------------------------
+# Regex patterns
+# -----------------------------
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[mK]|\x1b\][^\x1b]*(?:\x1b\\|\x07)")
+
+BOLD_RE        = re.compile(r"(?<!\\)\*\*(.+?)\*\*")
+ITALIC_RE      = re.compile(r"(?<!\\)(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+INLINE_CODE_RE = re.compile(r"(?<!\\)`([^`]+)`")
+STRIKE_RE      = re.compile(r"(?<!\\)~~(.+?)~~")
+IMAGE_RE       = re.compile(r"(?<!\\)!\[([^\]]*)\]\(([^)]+)\)")
+LINK_RE        = re.compile(r"(?<!\\)\[([^\]]+)\]\(([^)]+)\)")
+# Bare https?:// URLs — trailing sentence punctuation excluded from the match.
+INLINE_URL_RE  = re.compile(r"https?://[^\s\x00<>\[\]\"']+(?<![.,;:!?])")
+
+TABLE_SEP_CELL_RE = re.compile(r"^\s*:?-+:?\s*$")
+DIVIDER_RE        = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
+FENCE_RE          = re.compile(r"^\s*(`{3,}|~{3,})\s*(.*?)\s*$")
+SETEXT_H1_RE      = re.compile(r"^\s*=+\s*$")
+SETEXT_H2_RE      = re.compile(r"^\s*-+\s*$")
+LIST_ITEM_RE      = re.compile(r"^(\s*)[-*+•]\s+(.+)$")
+ORDERED_LIST_RE   = re.compile(r"^(\s*)((?:\d+|[A-Za-z]|[IVXLCDMivxlcdm]+)[.)])\s+(.+)$")
+TASK_ITEM_RE      = re.compile(r"^\[([ xX])\]\s+(.+)$")
+ESCAPED_MD_RE     = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|>~])")
+
+# Voice renderer regex
+_STRIKE_RE_VOICE    = re.compile(r"~~(.+?)~~")
+_IMAGE_RE_VOICE     = re.compile(r"!\[([^\]]*)\]\([^\)]*\)")
+_LINK_RE_VOICE      = re.compile(r"\[([^\]]+)\]\([^\)]*\)")
+_BARE_URL_RE        = re.compile(r"https?://\S+")
+_TABLE_ROW_RE       = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_ROW_NOPIPE_RE = re.compile(r"^\s*[^|].*[^|]\s*$")
+
+# -----------------------------
+# Voice renderer config
+# -----------------------------
+
+_VOICE_SHORT_LINES = 3
+_VOICE_SHORT_CHARS  = 200
+
+_CODE_PLACEHOLDER = "You can see the code in our conversation history."
+_TEXT_PLACEHOLDER = "You can see the text in our conversation history."
+_TABLE_PLACEHOLDER = "See the table in our conversation history."
+
+_TEXT_FENCE_LABELS = {"text", "txt", ""}
+
+
+# ============================================================
+# Syntax Highlighting (Pygments)
+# ============================================================
+
+# Cache pygments imports and formatters for performance
+_pygments_available = None
+_pygments_lexers = {}
+_pygments_formatters = {}
+
+def _get_pygments():
+    """Lazy-load pygments modules."""
+    global _pygments_available
+    if _pygments_available is not None:
+        return _pygments_available
+    
+    try:
+        from pygments import highlight
+        from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
+        from pygments.formatters import Terminal256Formatter
+        from pygments.styles import get_style_by_name
+        from pygments.util import ClassNotFound
+        
+        _pygments_available = {
+            'highlight': highlight,
+            'get_lexer_by_name': get_lexer_by_name,
+            'guess_lexer': guess_lexer,
+            'TextLexer': TextLexer,
+            'Terminal256Formatter': Terminal256Formatter,
+            'get_style_by_name': get_style_by_name,
+            'ClassNotFound': ClassNotFound,
+        }
+        return _pygments_available
+    except ImportError:
+        _pygments_available = False
+        return False
+
+
+def _get_lexer(lang: str):
+    """Get pygments lexer for language, with fallback."""
+    pyg = _get_pygments()
+    if not pyg:
+        return None
+    
+    lang = (lang or "").strip().lower()
+    if not lang:
+        return pyg['TextLexer']()
+    
+    # Check cache
+    if lang in _pygments_lexers:
+        return _pygments_lexers[lang]
+    
+    # Common language aliases
+    aliases = {
+        'py': 'python',
+        'py3': 'python',
+        'js': 'javascript',
+        'ts': 'typescript',
+        'sh': 'bash',
+        'shell': 'bash',
+        'yml': 'yaml',
+        'md': 'markdown',
+        'rs': 'rust',
+        'go': 'golang',
+        'cpp': 'cpp',
+        'c++': 'cpp',
+        'cs': 'csharp',
+        'rb': 'ruby',
+        'pl': 'perl',
+        'pm': 'perl',
+    }
+    
+    lexer_name = aliases.get(lang, lang)
+    
+    try:
+        lexer = pyg['get_lexer_by_name'](lexer_name)
+        _pygments_lexers[lang] = lexer
+        return lexer
+    except pyg['ClassNotFound']:
+        try:
+            # Try guessing
+            lexer = pyg['guess_lexer'](f"# {lexer_name}\n")
+            _pygments_lexers[lang] = lexer
+            return lexer
+        except Exception:
+            pass
+    
+    # Fallback to text lexer
+    return pyg['TextLexer']()
+
+
+def _get_formatter(style: str = 'monokai'):
+    """Get cached Terminal256Formatter."""
+    if style not in _pygments_formatters:
+        pyg = _get_pygments()
+        if not pyg:
+            return None
+        try:
+            _pygments_formatters[style] = pyg['Terminal256Formatter'](style=style)
+        except Exception:
+            _pygments_formatters[style] = pyg['Terminal256Formatter'](style='monokai')
+    return _pygments_formatters[style]
+
+
+def highlight_code(code: str, lang: str = '', style: str = 'monokai') -> str:
+    """
+    Highlight code using pygments.
+    Returns ANSI-colored code string.
+    """
+    pyg = _get_pygments()
+    if not pyg:
+        return code
+    
+    try:
+        lexer = _get_lexer(lang)
+        formatter = _get_formatter(style)
+        if not formatter:
+            return code
+        
+        highlighted = pyg['highlight'](code, lexer, formatter)
+        # Strip trailing newline added by formatter
+        return highlighted.rstrip('\n')
+    except Exception:
+        return code
+
+
+# ============================================================
+# Width helpers
+# ============================================================
+
+def _term_size() -> Tuple[int, int]:
+    return shutil.get_terminal_size((80, 24))
+
+
+def visible_len(s: str) -> int:
+    """Length after removing ANSI escape sequences."""
+    return len(ANSI_ESCAPE.sub("", s))
+
+
+def display_width(s: str) -> int:
+    """
+    Best-effort display width.
+    Uses wcwidth if available, otherwise falls back to visible_len().
+    """
+    try:
+        from wcwidth import wcswidth  # type: ignore
+        width = wcswidth(ANSI_ESCAPE.sub("", s))
+        return max(0, width) if width is not None else visible_len(s)
+    except Exception:
+        return visible_len(s)
+
+
+def truncate_to_width(text: str, width: int) -> str:
+    """Truncate text to a given display width."""
+    if width <= 0:
+        return ""
+    try:
+        from wcwidth import wcwidth  # type: ignore
+        out = []
+        used = 0
+        for ch in text:
+            w = wcwidth(ch)
+            if w is None:
+                w = 1
+            if used + w > width:
+                break
+            out.append(ch)
+            used += w
+        return "".join(out)
+    except Exception:
+        return text[:width]
+
+
+def truncate_with_ellipsis(text: str, width: int) -> str:
+    """Truncate text to width, reserving room for an ASCII ellipsis."""
+    if display_width(text) <= width:
+        return text
+    if width <= 3:
+        return truncate_to_width(text, width)
+    return truncate_to_width(text, width - 3).rstrip() + "..."
+
+
+def _plain_for_measurement(text: str) -> str:
+    """
+    Remove markdown markers for width measurement.
+    Not a full parser, but enough to keep layout sane.
+    """
+    text = LINK_RE.sub(r"\1", text)
+    text = STRIKE_RE.sub(r"\1", text)
+    text = INLINE_CODE_RE.sub(r"\1", text)
+    text = BOLD_RE.sub(r"\1", text)
+    text = ITALIC_RE.sub(r"\1", text)
+    return text
+
+
+def _visible_measure(text: str) -> int:
+    return display_width(text)
+
+
+def make_divider(term_width: int) -> str:
+    term_width = max(1, term_width)
+
+    line_len = max(1, int(term_width * 0.8))
+    line_len = min(line_len, term_width)
+
+    padding = max(0, (term_width - line_len) // 2)
+
+    return (
+        " " * padding +
+        "─" * line_len +
+        " " * (term_width - padding - line_len)
+    )
+
+# ============================================================
+# Inline rendering
+# ============================================================
+
+def _stash(pattern: re.Pattern, text: str, formatter, prefix: str = "") -> tuple:
+    """Replace all *pattern* matches with opaque placeholder tokens.
+
+    *prefix* disambiguates tokens from different stash passes so they never
+    collide when multiple stashes are active simultaneously (e.g. code, link,
+    and URL stashes all live in the same text at the same time).
+    """
+    stash: list[str] = []
+
+    def repl(match):
+        token = f"\x00{prefix}{len(stash)}\x00"
+        stash.append(formatter(match))
+        return token
+
+    return pattern.sub(repl, text), stash
+
+
+def _restore_stash(text: str, stash: Sequence[str], prefix: str = "") -> str:
+    for i, value in enumerate(stash):
+        text = text.replace(f"\x00{prefix}{i}\x00", value)
+    return text
+
+
+def _apply_emphasis(text: str) -> str:
+    """Resolve bold and italic markers using targeted off-codes instead of
+    RESET, so parent styles survive when a nested span closes.
+
+    Correctly handled cases:
+        **bold *italic* still bold**    → bold / bold+italic / bold
+        *italic **bold** still italic*  → italic / italic+bold / italic
+        ***triple*** → bold+italic together
+    """
+    if not text:
+        return text
+
+    # Combined strong+emphasis — must run first so *** isn't split into ** + *
+    text = re.sub(
+        r"(?<!\\)\*\*\*(.+?)\*\*\*",
+        lambda m: f"{BOLD}{ITALIC}{m.group(1)}{ITALIC_OFF}{BOLD_OFF}",
+        text,
+    )
+
+    # Iterate until stable: each pass resolves one additional nesting level.
+    prev = None
+    while prev != text:
+        prev = text
+        text = BOLD_RE.sub(lambda m: f"{BOLD}{m.group(1)}{BOLD_OFF}", text)
+        text = ITALIC_RE.sub(lambda m: f"{ITALIC}{m.group(1)}{ITALIC_OFF}", text)
+
+    return text
+
+
+def _osc8_link(url: str, text: str) -> str:
+    """Wrap *text* in an OSC 8 terminal hyperlink pointing at *url*.
+
+    Supported by most modern terminals (kitty, WezTerm, iTerm2, Windows
+    Terminal, GNOME Terminal ≥ 3.26, Termux with its VTE backend, etc.).
+    Falls back gracefully in terminals that do not support OSC 8 — only the
+    plain styled text is shown, without the click handler.
+
+    Wire format:
+        ESC ] 8 ; params ; uri  ST  <visible text>  ESC ] 8 ; ;  ST
+    where ST is the String Terminator  ESC \\ (\\033\\\\).
+
+    Usage:
+        _osc8_link("https://google.com", "\\033[4;34mhttps://google.com\\033[0m")
+        _osc8_link("https://example.com", "Example Site")
+    """
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def render_inline(text: str) -> str:
+    """Apply inline markdown formatting for terminal output.
+
+    Architecture — three-stash pipeline:
+      C (code)  — backtick spans, stashed verbatim before any processing.
+      L (link)  — ``[display](url)`` turned into an OSC 8 hyperlink.
+      U (url)   — bare ``https?://`` URLs turned into OSC 8 hyperlinks.
+
+    Each stash uses a distinct single-letter prefix so their placeholder
+    tokens (``\\x00C0\\x00``, ``\\x00L0\\x00``, ``\\x00U0\\x00``, …) never
+    collide, fixing the original single-namespace collision bug.
+
+    Nesting — bold / italic close with targeted off-codes (\\033[22m /
+    \\033[23m) instead of a global RESET, so a nested span does not kill its
+    parent style when it closes:
+
+        **outer *inner* still outer**  →  bold  bold+italic  bold
+
+    Strikethrough uses actual ANSI crossed-out (\\033[9m / \\033[29m) plus
+    GRAY colour, avoiding the DIM-vs-bold intensity conflict of the old code.
+    """
+    if not text:
+        return ""
+
+    # ── 1. Code spans — literal; stash before any other processing ──────────
+    text, code_stash = _stash(
+        INLINE_CODE_RE,
+        text,
+        lambda m: f"{YELLOW}`{m.group(1)}`{COLOR_RESET}",
+        prefix="C",
+    )
+
+    # ── 2. Markdown images ![alt](url) → compact linked image label ────────
+    text, image_stash = _stash(
+        IMAGE_RE,
+        text,
+        lambda m: _osc8_link(
+            m.group(2),
+            f"{MAG}{UNDER}{m.group(1).strip() or 'image'}{UNDER_OFF}{COLOR_RESET}",
+        ),
+        prefix="I",
+    )
+
+    # ── 3. Markdown links [display](url) → pretty name + OSC 8 hyperlink ───
+    text, link_stash = _stash(
+        LINK_RE,
+        text,
+        lambda m: _osc8_link(
+            m.group(2),
+            f"{UNDER}{BLUE}{m.group(1)}{UNDER_OFF}{COLOR_RESET}",
+        ),
+        prefix="L",
+    )
+
+    # ── 4. Bare https?:// URLs not already covered by a link stash ──────────
+    text, url_stash = _stash(
+        INLINE_URL_RE,
+        text,
+        lambda m: _osc8_link(
+            m.group(0),
+            f"{UNDER}{BLUE}{m.group(0)}{UNDER_OFF}{COLOR_RESET}",
+        ),
+        prefix="U",
+    )
+
+    # ── 5. Remaining inline styles — targeted off-codes, not global RESET ───
+    text = STRIKE_RE.sub(
+        lambda m: f"{GRAY}{STRIKE_CODE}{m.group(1)}{STRIKE_OFF}{COLOR_RESET}",
+        text,
+    )
+    text = _apply_emphasis(text)
+    text = ESCAPED_MD_RE.sub(r"\1", text)
+
+    # ── 6. Restore all stashes in reverse stash order ───────────────────────
+    text = _restore_stash(text, url_stash,  prefix="U")
+    text = _restore_stash(text, link_stash, prefix="L")
+    text = _restore_stash(text, image_stash, prefix="I")
+    text = _restore_stash(text, code_stash, prefix="C")
+
+    return text
+
+
+# ============================================================
+# Table helpers
+# ============================================================
+
+def split_md_table_row(line: str) -> List[str]:
+    """Split a markdown table row on unescaped pipes."""
+    s = line.strip()
+    has_outer_pipes = s.startswith("|") and s.endswith("|")
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+
+    cells = []
+    cur = []
+    escaped = False
+
+    for ch in s:
+        if escaped:
+            cur.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == "|":
+            cells.append("".join(cur).strip().replace(r"\|", "|"))
+            cur = []
+        else:
+            cur.append(ch)
+
+    cells.append("".join(cur).strip().replace(r"\|", "|"))
+
+    # For no-outer-pipe tables, preserve the split only if it actually looks tabular.
+    if not has_outer_pipes and len(cells) < 2:
+        return [line.rstrip()]
+
+    return cells
+
+
+def is_table_separator_row(cells: Sequence[str]) -> bool:
+    return len(cells) >= 2 and all(TABLE_SEP_CELL_RE.match(cell or "") for cell in cells)
+
+
+def _is_table_block_start(lines: Sequence[str], i: int) -> bool:
+    """
+    Detect:
+    1) standard pipe tables
+    2) no-outer-pipe tables
+
+    Requires a separator row directly after the header row.
+    """
+    if i + 1 >= len(lines):
+        return False
+
+    row1 = split_md_table_row(lines[i])
+    row2 = split_md_table_row(lines[i + 1])
+
+    if not is_table_separator_row(row2):
+        return False
+
+    return len(row1) >= 2 and len(row1) == len(row2)
+
+
+def _table_row_looks_valid(row: Sequence[str]) -> bool:
+    return len(row) >= 2
+
+
+def _wrap_plain_by_width(text: str, width: int) -> List[str]:
+    """
+    Wrap plain text by display width.
+    This is used for tables after markdown markers have been stripped for layout.
+    """
+    width = max(1, width)
+    if not text:
+        return [""]
+
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: List[str] = []
+    cur = ""
+
+    def cur_w(s: str) -> int:
+        return display_width(s)
+
+    for word in words:
+        candidate = word if not cur else f"{cur} {word}"
+        if cur_w(candidate) <= width:
+            cur = candidate
+            continue
+
+        if cur:
+            lines.append(cur)
+            cur = ""
+
+        # Word itself too long, break hard by display width.
+        if cur_w(word) <= width:
+            cur = word
+        else:
+            chunk = ""
+            for ch in word:
+                if cur_w(chunk + ch) <= width:
+                    chunk += ch
+                else:
+                    if chunk:
+                        lines.append(chunk)
+                    chunk = ch
+            cur = chunk
+
+    if cur:
+        lines.append(cur)
+
+    return lines or [""]
+
+
+def pad_ansi_string(s: str, width: int, align: str = "left") -> str:
+    """Pad a string containing ANSI escape codes to a visible width."""
+    vis_len = display_width(s)
+    if vis_len >= width:
+        return s
+
+    needed = width - vis_len
+    if align == "center":
+        left = needed // 2
+        right = needed - left
+        return " " * left + s + " " * right
+    if align == "right":
+        return " " * needed + s
+    return s + " " * needed
+
+
+def make_border(col_widths: Sequence[int], left: str, mid: str, right: str, line_char: str = "─") -> str:
+    parts = [line_char * (w + 2) for w in col_widths]
+    return f"{left}{mid.join(parts)}{right}"
+
+
+def fit_column_widths(max_widths: Sequence[int], term_width: int, min_col_width: int = 3) -> List[int]:
+    """
+    Fit columns into terminal width.
+    Keeps things sane in narrow terminals instead of pretending every terminal is a cathedral.
+    """
+    num_cols = len(max_widths)
+    if num_cols == 0:
+        return []
+
+    overhead = 3 * num_cols + 1  # borders + padding + separators
+    available = max(1, term_width - overhead)
+
+    widths = [max(min_col_width, w) for w in max_widths]
+    total = sum(widths)
+
+    if total > available:
+        excess = total - available
+        while excess > 0:
+            shrinkable = [i for i, w in enumerate(widths) if w > min_col_width]
+            if not shrinkable:
+                break
+            i = max(shrinkable, key=lambda idx: widths[idx])
+            widths[i] -= 1
+            excess -= 1
+    elif total < available:
+        extra = available - total
+        i = 0
+        while extra > 0 and num_cols > 0:
+            widths[i % num_cols] += 1
+            extra -= 1
+            i += 1
+
+    return widths
+
+
+def _render_code_block(code_lines: Sequence[str], lang_str: str, term_width: int, highlight: bool = True) -> List[str]:
+    """
+    Render a fenced code block using a modern CLI open-right gutter style.
+    Anchored with top (╭── lang ──) and bottom (╰──) borders with a left accent bar (│ ),
+    allowing clean line rendering without rigid right-border clipping or double-box distortion.
+    
+    Now supports syntax highlighting via pygments when available.
+    """
+    clean_lang = (lang_str or "").strip()
+    code_text = "\n".join(code_lines)
+    
+    # Apply syntax highlighting if enabled and pygments available
+    if highlight:
+        highlighted = highlight_code(code_text, clean_lang)
+        if highlighted != code_text:
+            code_lines = highlighted.split('\n')
+    
+    max_line_width = max((display_width(x) for x in code_lines), default=20)
+
+    # Compute header/footer width bounded by terminal size
+    max_bar_width = max(10, term_width - 2)
+    bar_width = max(20, min(max_bar_width, max_line_width + 4))
+
+    label_part = f" {clean_lang} " if clean_lang else ""
+    remaining_dashes = max(2, bar_width - display_width(label_part) - 3)
+
+    top = f"{GRAY}╭──{CYAN}{label_part}{GRAY}{'─' * remaining_dashes}{RESET}"
+    bottom = f"{GRAY}╰{'─' * bar_width}{RESET}"
+
+    rendered = [top]
+    for code_line in code_lines:
+        rendered.append(f"{GRAY}│{RESET} {code_line}")
+    rendered.append(bottom)
+    return rendered
+
+
+def render_table(raw_rows: List[List[str]], term_width: int, header_color: str = BOLD + CYAN, border_color: str = GRAY) -> str:
+    """Render a markdown table cleanly in the terminal."""
+    if not raw_rows:
+        return ""
+
+    num_cols = max(len(row) for row in raw_rows)
+    if num_cols == 0:
+        return ""
+
+    rows = [row[:] + [""] * (num_cols - len(row)) for row in raw_rows]
+
+    has_header = False
+    alignments = ["left"] * num_cols
+
+    if len(rows) >= 2 and is_table_separator_row(rows[1]) and len(rows[0]) == len(rows[1]):
+        has_header = True
+        for i, cell in enumerate(rows[1]):
+            c = cell.strip()
+            if c.startswith(":") and c.endswith(":"):
+                alignments[i] = "center"
+            elif c.endswith(":"):
+                alignments[i] = "right"
+            else:
+                alignments[i] = "left"
+
+    headers = rows[0] if has_header else None
+    data_rows = rows[2:] if has_header else rows
+
+    # Measure visible content width.
+    max_widths = [0] * num_cols
+    content_rows = data_rows + ([headers] if headers else [])
+    for row in content_rows:
+        for i, cell in enumerate(row):
+            plain = _plain_for_measurement(cell)
+            cell_width = max((display_width(part) for part in plain.splitlines()), default=0)
+            max_widths[i] = max(max_widths[i], cell_width)
+
+    # Tiny terminal fallback: stacked layout.
+    overhead = 3 * num_cols + 1
+    if term_width < 30 or term_width - overhead < num_cols * 3:
+        lines = []
+        if headers:
+            for r_idx, row in enumerate(data_rows):
+                if r_idx > 0:
+                    lines.append(f"{border_color}{'-' * max(5, min(term_width, 20))}{RESET}")
+                for c_idx, cell in enumerate(row):
+                    label = render_inline(headers[c_idx])
+                    value = render_inline(cell)
+                    lines.append(f"{header_color}{label}{RESET}: {value}")
+        else:
+            for row in data_rows:
+                for c_idx, cell in enumerate(row):
+                    lines.append(f"{CYAN}{c_idx + 1}.{RESET} {render_inline(cell)}")
+                lines.append("")
+        return "\n".join(line.rstrip() for line in lines).rstrip()
+
+    col_widths = fit_column_widths(max_widths, term_width, min_col_width=3)
+    output = [f"{border_color}{make_border(col_widths, '┌', '┬', '┐')}{RESET}"]
+
+    def format_row(cells: Sequence[str], is_header: bool = False) -> str:
+        # Render each cell after measuring/wrapping by plain text.
+        wrapped_cells: List[List[str]] = []
+        for cell, width in zip(cells, col_widths):
+            plain = _plain_for_measurement(cell)
+            wrapped_plain = _wrap_plain_by_width(plain, width)
+            wrapped_cells.append(wrapped_plain)
+
+        line_count = max((len(w) for w in wrapped_cells), default=1)
+        row_lines = []
+
+        for line_idx in range(line_count):
+            parts = []
+            for col_idx, width in enumerate(col_widths):
+                cell_lines = wrapped_cells[col_idx]
+                raw_text = cell_lines[line_idx] if line_idx < len(cell_lines) else ""
+                formatted = render_inline(raw_text)
+                if is_header:
+                    formatted = f"{header_color}{formatted}{RESET}"
+                padded = pad_ansi_string(formatted, width, alignments[col_idx])
+                parts.append(f" {padded} ")
+
+            sep = f"{border_color}│{RESET}"
+            row_lines.append(f"{border_color}│{RESET}{sep.join(parts)}{border_color}│{RESET}")
+
+        return "\n".join(row_lines)
+
+    if headers is not None:
+        output.append(format_row(headers, is_header=True))
+        output.append(f"{border_color}{make_border(col_widths, '├', '┼', '┤')}{RESET}")
+
+    for row in data_rows:
+        output.append(format_row(row, is_header=False))
+
+    output.append(f"{border_color}{make_border(col_widths, '└', '┴', '┘')}{RESET}")
+    return "\n".join(output)
+
+
+# ============================================================
+# Markdown terminal renderer
+# ============================================================
+
+# Matches a leading emoji/symbol cluster and/or a common numbering token
+# (1.  I.  a.  (1)  [I]  I]  etc.) at the very start of a heading body.
+# Used by _split_heading_prefix to separate undecorated prefix from the
+# part of the heading that should receive the underline.
+_HEADING_PREFIX_RE = re.compile(
+    r"^("
+    # ① Optional emoji / special-symbol cluster (absorbs trailing whitespace)
+    r"(?:["
+    r"\U0001F300-\U0001FAFF"   # misc symbols & pictographs, emoticons
+    r"\U0001F1E6-\U0001F1FF"   # regional indicators
+    r"\U00002600-\U000026FF"   # misc symbols
+    r"\U00002700-\U000027BF"   # dingbats
+    r"\u2B50\u2605\u2606"      # ⭐ ★ ☆
+    r"\ufe0f\u200d"            # variation selector-16 / ZWJ
+    r"]+\s*)?"                 # cluster optional; \s* absorbs trailing space
+    # ② Optional numbering token + mandatory gap
+    #    \s+ is placed AFTER a wrapper group so it applies to every alternative,
+    #    not just the last one.
+    r"(?:"                     # outer nc — the whole ② group
+    r"(?:"                     # inner nc — one of the token shapes
+    r"\(\d{1,4}\)"             # (1) … (9999)
+    r"|\[[A-Za-z0-9]{1,5}\]"  # [I]  [ii]  [1]  [A2]
+    r"|[A-Za-z0-9]{1,5}\]"    # I]   ii]   1]   (at most 5 chars before ])
+    r"|(?:\d{1,4}"             # digits:  1.  12.  1)
+    r"|[IVXLCDMivxlcdm]{1,8}" # Roman:   I.  IV.  xii.
+    r"|[a-zA-Z]{1,2}"         # letters: a.  A.   ab.
+    r")[.)]"
+    r")"                       # close inner nc (token shapes)
+    r"\s+)?"                   # mandatory gap after ANY token; outer nc optional
+    r")",                      # close outer capturing group 1
+    re.UNICODE,
+)
+
+
+def _split_heading_prefix(text: str) -> tuple:
+    """Split a heading body into ``(prefix, body)``.
+
+    *prefix* — any leading emoji cluster and/or numbering token
+               (``1.``, ``I.``, ``a.``, ``(1)``, ``[I]``, ``I]``, …).
+               Receives bold + colour but **no underline**.
+    *body*   — the actual heading words that receive the underline.
+
+    Returns ``("", text)`` when no recognisable prefix is found.
+    """
+    m = _HEADING_PREFIX_RE.match(text)
+    if m:
+        prefix = m.group(1) or ""
+        body = text[len(prefix):]
+        if prefix and body:      # need a non-empty body to split
+            return prefix, body
+    return "", text
+
+
+def _render_heading(level: int, body_text: str) -> str:
+    pfx, body = _split_heading_prefix(body_text)
+    if level == 1:
+        return f"{BOLD}{BLUE}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+    if level == 2:
+        return f"{BOLD}{CYAN}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+    if level == 3:
+        return f"{BOLD}{MAG}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+    if level == 4:
+        return f"{BOLD}{GREEN}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+    if level == 5:
+        return f"{BOLD}{YELLOW}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+    return f"{BOLD}{pfx}{UNDER}{render_inline(body)}{UNDER_OFF}{RESET}"
+
+
+def _indent_level(raw_indent: str) -> int:
+    return len(raw_indent.replace("\t", "    ")) // 2
+
+
+def _render_list_line(indent: str, marker: str, body: str, ordered: bool = False) -> str:
+    prefix = "  " * _indent_level(indent)
+    task = TASK_ITEM_RE.match(body)
+    if task:
+        checked = task.group(1).lower() == "x"
+        symbol = "☑" if checked else "☐"
+        color = GREEN if checked else GRAY
+        return f"{prefix}{color}{symbol}{RESET} {render_inline(task.group(2))}"
+    color = CYAN if ordered else GREEN
+    return f"{prefix}{color}{marker}{RESET} {render_inline(body)}"
+
+
+def _render_thinking_block(block_text: str, term_width: int) -> List[str]:
+    """Render an explicit XML thinking block (<thought) as a styled terminal blob."""
+    lines = block_text.strip().splitlines()
+    if not lines:
+        return []
+    
+    header = f"{MAG}{BOLD}Thinking Process:{RESET}"
+    rendered = [header]
+    for l in lines:
+        rendered.append(f"{GRAY}│ {l}{RESET}")
+    rendered.append(f"{GRAY}└{'─' * min(40, max(10, term_width - 4))}{RESET}")
+    return rendered
+
+
+def render_markdown_terminal(text: str, highlight_code_blocks: bool = True) -> str:
+    """Transform markdown into ANSI-coloured terminal output, rendering <thought> blobs distinctly.
+    
+    Args:
+        text: Markdown text to render
+        highlight_code_blocks: Whether to apply syntax highlighting to code blocks (default: True)
+    """
+    term_width, _ = _term_size()
+
+    # Pre-process <thought> XML tags into distinct rendered blocks
+    def _repl_think(m):
+        content = m.group(1) or m.group(2) or ""
+        rendered_lines = _render_thinking_block(content, term_width)
+        return "\n" + "\n".join(rendered_lines) + "\n"
+
+    text = re.sub(r"<(?:thought|think)>\s*(.*?)\s*</(?:thought|think)>", _repl_think, text, flags=re.DOTALL)
+
+    lines = text.splitlines()
+    rendered: List[str] = []
+    in_code = False
+    code_lines: List[str] = []
+    code_lang = "code"
+
+    i = 0
+    num_lines = len(lines)
+
+    while i < num_lines:
+        line = lines[i]
+        stripped = line.strip()
+
+        # Code block open / close. Supports backtick and tilde fences.
+        fence = FENCE_RE.match(line)
+        if fence:
+            if in_code:
+                rendered.extend(_render_code_block(code_lines, code_lang, term_width, highlight=highlight_code_blocks))
+                code_lines = []
+                in_code = False
+                code_lang = "code"
+            else:
+                in_code = True
+                content = fence.group(2).strip()
+                code_lang = content.split()[0] if content else "code"
+            i += 1
+            continue
+
+        if in_code:
+            code_lines.append(line.rstrip())
+            i += 1
+            continue
+
+        # Setext headings. Must run before divider detection because --- can
+        # be either a level-2 heading underline or a horizontal rule.
+        if stripped and i + 1 < num_lines:
+            next_stripped = lines[i + 1].strip()
+            if SETEXT_H1_RE.match(next_stripped):
+                rendered.append(_render_heading(1, stripped))
+                i += 2
+                continue
+            if SETEXT_H2_RE.match(next_stripped):
+                rendered.append(_render_heading(2, stripped))
+                i += 2
+                continue
+
+        # Table block
+        if _is_table_block_start(lines, i):
+            table_lines: List[str] = []
+            j = i
+            while j < num_lines and re.search(r"(?<!\\)\|", lines[j]):
+                table_lines.append(lines[j])
+                j += 1
+
+            raw_rows = [split_md_table_row(t_line) for t_line in table_lines]
+            rendered_table = render_table(raw_rows, term_width)
+            rendered.extend(rendered_table.splitlines())
+            i = j
+            continue
+
+        # Divider
+        if DIVIDER_RE.match(stripped) or stripped in ("---", "***", "___", "- - -", "* * *", "_ _ _"):
+            rendered.append(f"{GRAY}{make_divider(term_width)}{RESET}")
+            i += 1
+            continue
+
+        # Headings — prefix (emoji / numbering) gets bold+colour only;
+        # the body text alone is underlined.
+        if stripped.startswith("# "):
+            rendered.append(_render_heading(1, stripped[2:]))
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            rendered.append(_render_heading(2, stripped[3:]))
+            i += 1
+            continue
+        if stripped.startswith("### "):
+            rendered.append(_render_heading(3, stripped[4:]))
+            i += 1
+            continue
+        if stripped.startswith("#### "):
+            rendered.append(_render_heading(4, stripped[5:]))
+            i += 1
+            continue
+        if stripped.startswith("##### "):
+            rendered.append(_render_heading(5, stripped[6:]))
+            i += 1
+            continue
+        if stripped.startswith("###### "):
+            rendered.append(_render_heading(6, stripped[7:]))
+            i += 1
+            continue
+
+        # Blockquote, including nested >> quotes.
+        quote = re.match(r"^(>+)\s?(.*)$", stripped)
+        if quote:
+            prefix = " ".join("│" for _ in quote.group(1)) + " "
+            rendered.append(f"{DIM}{prefix}{render_inline(quote.group(2).lstrip())}{RESET}")
+            i += 1
+            continue
+
+        # Bullet and task lists
+        bullet = LIST_ITEM_RE.match(line)
+        if bullet:
+            rendered.append(_render_list_line(bullet.group(1), "•", bullet.group(2)))
+            i += 1
+            continue
+
+        # Numbered lists
+        numbered = ORDERED_LIST_RE.match(line)
+        if numbered:
+            rendered.append(_render_list_line(numbered.group(1), numbered.group(2), numbered.group(3), ordered=True))
+            i += 1
+            continue
+
+        # Empty line
+        if stripped == "":
+            rendered.append("")
+            i += 1
+            continue
+
+        # Normal text
+        rendered.append(render_inline(line))
+        i += 1
+
+    # Unclosed code block safety net
+    if in_code and code_lines:
+        rendered.extend(_render_code_block(code_lines, code_lang, term_width, highlight=highlight_code_blocks))
+
+    return "\n".join(rendered)
+
+
+render_for_printing = render_markdown_terminal
+
+# ============================================================
+# Voice / TTS sanitiser
+# ============================================================
+
+def _is_short_content(lines: List[str]) -> bool:
+    joined = " ".join(lines).strip()
+    return len(lines) <= _VOICE_SHORT_LINES and len(joined) <= _VOICE_SHORT_CHARS
+
+
+def _shorten_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc
+        return host if host else url
+    except Exception:
+        return url
+
+
+def _strip_inline(text: str) -> str:
+    """
+    Strip markdown markers into speakable text.
+    """
+    text = _IMAGE_RE_VOICE.sub(lambda m: m.group(1) or "image", text)
+    text = _LINK_RE_VOICE.sub(r"\1", text)
+    text = _BARE_URL_RE.sub(lambda m: _shorten_url(m.group(0)), text)
+    text = _STRIKE_RE_VOICE.sub(r"\1", text)
+    text = INLINE_CODE_RE.sub(r"\1", text)
+    text = BOLD_RE.sub(r"\1", text)
+    text = ITALIC_RE.sub(r"\1", text)
+    text = ESCAPED_MD_RE.sub(r"\1", text)
+    return text
+
+
+def _is_table_row(line: str) -> bool:
+    s = line.rstrip()
+    return bool(_TABLE_ROW_RE.match(s) or ("|" in s and _TABLE_ROW_NOPIPE_RE.match(s)))
+
+
+def _preprocess_tables(text: str) -> str:
+    """
+    Replace markdown tables with a short spoken placeholder before line-by-line processing.
+    Uses the same broad table detection as the terminal renderer.
+    """
+    lines = text.splitlines(keepends=True)
+    result = []
+    buf = []
+
+    def flush():
+        if len(buf) >= 2:
+            result.append(_TABLE_PLACEHOLDER + "\n")
+        else:
+            result.extend(buf)
+        buf.clear()
+
+    for line in lines:
+        if _is_table_row(line):
+            buf.append(line)
+        else:
+            if buf:
+                flush()
+            result.append(line)
+
+    if buf:
+        flush()
+
+    return "".join(result)
+
+
+def render_for_voice(text: str) -> str:
+    """Sanitise markdown for voice / TTS output."""
+    text = _preprocess_tables(text)
+
+    # Leading emoji / symbol clusters often appear in generated headings.
+    # Remove them only at the start of heading content, not everywhere.
+    LEADING_EMOJI_RE = re.compile(
+        r"^(?:[\s"
+        r"\U0001F300-\U0001FAFF"  # misc emoji blocks
+        r"\U0001F1E6-\U0001F1FF"  # regional indicators
+        r"\U00002600-\U000026FF"  # misc symbols
+        r"\U00002700-\U000027BF"  # dingbats
+        r"\ufe0f"                 # variation selector
+        r"\u200d"                 # zero width joiner
+        r"]+)"
+    )
+
+    def strip_leading_heading_emoji(s: str) -> str:
+        s = LEADING_EMOJI_RE.sub("", s)
+        return s.lstrip(" -–—:|•*#")
+
+    lines = text.splitlines()
+    output: List[str] = []
+    in_code = False
+    fence_lang = ""
+    code_lines: List[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        fence = FENCE_RE.match(line)
+        if fence:
+            if in_code:
+                if fence_lang in _TEXT_FENCE_LABELS:
+                    clean = [l.strip() for l in code_lines if l.strip()]
+                    if _is_short_content(clean):
+                        content = " ".join(clean)
+                        if content:
+                            output.append(content)
+                    else:
+                        output.append(_TEXT_PLACEHOLDER)
+                else:
+                    output.append(_CODE_PLACEHOLDER)
+
+                code_lines = []
+                fence_lang = ""
+                in_code = False
+            else:
+                content = fence.group(2).strip()
+                fence_lang = content.lower().split()[0] if content else ""
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(line.rstrip())
+            continue
+
+        if DIVIDER_RE.match(stripped):
+            continue
+
+        if stripped == "":
+            if output and output[-1] != "":
+                output.append("")
+            continue
+
+        m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if m:
+            level = len(m.group(1))
+            content_val = m.group(2)
+            clean_content = strip_leading_heading_emoji(_strip_inline(content_val))
+            if level == 1:
+                clean_content = clean_content.upper()
+            output.append(clean_content)
+            continue
+
+        if stripped.startswith(">"):
+            output.append(_strip_inline(stripped[1:].lstrip()))
+            continue
+
+        m = re.match(r"^(\s*)[-*•]\s+(.+)$", line)
+        if m:
+            output.append(_strip_inline(m.group(2)))
+            continue
+
+        m = re.match(r"^\s*(\d+)\.\s+(.+)$", line)
+        if m:
+            output.append(f"{m.group(1)}. {_strip_inline(m.group(2))}")
+            continue
+
+        output.append(_strip_inline(line))
+
+    if in_code and code_lines:
+        if fence_lang in _TEXT_FENCE_LABELS:
+            clean = [l.strip() for l in code_lines if l.strip()]
+            if _is_short_content(clean):
+                content = " ".join(clean)
+                if content:
+                    output.append(content)
+            else:
+                output.append(_TEXT_PLACEHOLDER)
+        else:
+            output.append(_CODE_PLACEHOLDER)
+
+    while output and output[0] == "":
+        output.pop(0)
+    while output and output[-1] == "":
+        output.pop()
+
+    return "\n".join(output)
