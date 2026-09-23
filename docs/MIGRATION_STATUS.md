@@ -19,3 +19,23 @@ Separate Seminar LLM responsibilities from legacy responsibilities in src/semina
 ## Migration Rule
 
 Each completed migration stage is documented and committed before proceeding to the next stage.
+
+## Memory Adapter Extraction
+
+The read-only memory retrieval functions used by Seminar LLM agents were extracted from the legacy tools module into:
+
+`src/seminar/llm/memory.py`
+
+The extracted component contains:
+
+- `retrieve_memory()`
+- `build_memory_block()`
+
+The Seminar LLM client now imports `build_memory_block()` from the new Seminar memory module.
+
+The extraction preserves the existing memory file and retrieval behavior while preventing this specific Seminar dependency from being obtained through the legacy wildcard tools import.
+
+The legacy `tools` dependency remains temporarily because `llm/client.py` still contains other direct-agent and tool-execution responsibilities.
+
+The new memory adapter was syntax-validated successfully.
+

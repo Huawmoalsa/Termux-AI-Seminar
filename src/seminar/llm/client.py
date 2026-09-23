@@ -19,6 +19,7 @@ from agent import state_manager
 from openai import OpenAI
 from core.renderer import RED, YELLOW, RESET, GRAY
 from tools import *
+from .memory import build_memory_block
 import context_manager as _cm
 import core.display_state as display_state
 from core.trust_layer import TRUST
