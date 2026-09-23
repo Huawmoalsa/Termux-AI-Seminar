@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-23T05:41:20",
+  "timestamp": "2026-09-23T09:13:51+00:00",
   "project": "Termux-AI Seminar",
   "migrations": [
     {
@@ -54,12 +54,29 @@
         "references": [
           "core/__main__.py",
           "core/tools.py",
-          "core/whatsapp_manager.py",
-          "scripts/finalize_seminar.py"
+          "core/whatsapp_manager.py"
         ]
       }
     ]
   },
   "backup_root": ".finalize_backups/20260923_054113",
-  "duration_seconds": 7.348
+  "duration_seconds": 7.348,
+  "cleanup": {
+    "status": "in_progress",
+    "completed": [
+      "Removed obsolete backup files.",
+      "Removed obsolete trust and broadcast migration patch scripts.",
+      "Removed obsolete Seminar migration metric and routing patch scripts.",
+      "Removed the migrated legacy orchestration runtime tree.",
+      "Removed scripts/finalize_seminar.py."
+    ],
+    "preserved": [
+      "src/seminar/",
+      "data/evidence_ledger.jsonl",
+      "agent/",
+      "reflection/",
+      ".orion_quarantine/"
+    ],
+    "reason_for_preserving_agent_and_reflection": "Dependency references remain from legacy components and require dependency-closure analysis before removal."
+  }
 }
