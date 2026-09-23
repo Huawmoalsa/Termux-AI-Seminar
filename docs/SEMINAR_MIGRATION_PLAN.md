@@ -62,4 +62,10 @@ Do not delete or rewrite existing components until their dependencies and role i
 
 ## Status
 
-Phase 1: In progress.
+Phase 1: Completed.
+Phase 2: Completed.
+Phase 3: In progress (core Seminar migration completed; further extraction is intentionally deferred).
+Phase 4: Not started.
+Phase 5: Not started.
+Phase 6: In progress.
+Phase 7: Not started.
